@@ -9,7 +9,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
+        value: 10000
       - key: GEMINI_API_KEY
         value: AIzaSyDQR42zm4pcRMkY9KzKvEmXm7hyR8UzxHI
       - key: TELEGRAM_BOT_TOKEN
