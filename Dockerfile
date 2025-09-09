@@ -30,8 +30,12 @@ COPY . .
 # Создание директории для записей
 RUN mkdir -p /tmp/recordings
 
+# Создание пользователя для запуска приложения
+RUN useradd -m appuser && chown -R appuser:appuser /app /tmp/recordings
+USER appuser
+
 # Экспорт порта
 EXPOSE 3000
 
 # Запуск приложения
-CMD ["sh", "-c", "pulseaudio --start && Xvfb :99 -screen 0 1024x768x16 & export DISPLAY=:99 && npm start"]
+CMD ["sh", "-c", "pulseaudio --start --exit-idle-time=-1 2>/dev/null || true; rm -f /tmp/.X99-lock; Xvfb :99 -screen 0 1024x768x16 -ac & export DISPLAY=:99; sleep 2; npm start"]
