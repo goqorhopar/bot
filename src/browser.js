@@ -31,7 +31,8 @@ export async function openMeeting({ url, logger }) {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
-      '--disable-features=site-per-process'
+      '--disable-features=site-per-process',
+      '--use-fake-device-for-media-stream'  // Добавлено для эмуляции медиаустройств
     ]
   });
 
@@ -48,22 +49,18 @@ export async function openMeeting({ url, logger }) {
     });
   });
 
-  // Разрешаем все permissions
-  const client = await page.createCDPSession();
-  await client.send('Browser.setPermission', {
-    origin: new URL(url).origin,
-    permission: { name: 'audioCapture' },
-    setting: 'granted'
-  });
-  await client.send('Browser.setPermission', {
-    origin: new URL(url).origin,
-    permission: { name: 'videoCapture' },
-    setting: 'granted'
-  });
-
   logger.info({ url }, 'Opening meeting page...');
   
   try {
+    // Настраиваем разрешения через CDP сессию
+    const client = await page.createCDPSession();
+    
+    // Устанавливаем правильные разрешения :cite[8]
+    await client.send('Browser.grantPermissions', {
+      origin: new URL(url).origin,
+      permissions: ['microphone', 'camera']
+    });
+
     // Настраиваем таймауты для загрузки страницы
     await page.goto(url, { 
       waitUntil: 'networkidle2', 
