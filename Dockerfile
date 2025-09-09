@@ -22,7 +22,7 @@ WORKDIR /app
 
 # Копирование package.json и установка зависимостей
 COPY package*.json ./
-RUN npm install
+RUN npm install --production
 
 # Копирование исходного кода
 COPY . .
