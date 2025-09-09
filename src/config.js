@@ -8,6 +8,5 @@ export const config = {
   },
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
   adminChatId: process.env.ADMIN_CHAT_ID,
-  // Добавляем базовый URL для webhook
   webhookUrl: process.env.RENDER_EXTERNAL_URL || 'https://bot-w79g.onrender.com'
 };
