@@ -9,7 +9,7 @@ console.log('Telegram token status:', token ? 'PRESENT' : 'MISSING');
 
 if (token) {
   try {
-    // Используем polling вместо webhook для простоты
+    // Используем polling вместо webhook для простоты (webhook требует HTTPS)
     bot = new TelegramBot(token, { 
       polling: {
         interval: 300,
