@@ -6,43 +6,69 @@ import { transcribeAudio } from './transcribe.js';
 import { runChecklist } from './gemini.js';
 import { sendMessage } from './telegram.js';
 import { config } from './config.js';
+import { 
+  setupMiddleware, 
+  setupHealthCheck, 
+  setupErrorHandling, 
+  setupGracefulShutdown 
+} from './middleware.js';
+import { bitrixService } from './bitrix.js';
 
-// Простая конфигурация логгера без pino-pretty
+// Logger configuration
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   formatters: {
-    level: (label) => {
-      return { level: label };
-    }
+    level: (label) => ({ level: label })
   },
   timestamp: () => `,"time":"${new Date().toISOString()}"`
 });
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
 
-// Healthcheck
-app.get('/health', (_, res) => res.status(200).send('ok'));
+// Setup middleware (security, CORS, rate limiting, logging)
+setupMiddleware(app);
+
+// Healthcheck endpoints
+setupHealthCheck(app);
 
 // Endpoint для полного цикла анализа встречи
 app.post('/process-meeting', async (req, res) => {
   const { meetingUrl, leadId } = req.body || {};
   
+  // Validation
   if (!meetingUrl) {
-    return res.status(400).json({ error: 'meetingUrl is required' });
+    logger.warn({ meetingUrl, leadId }, 'Missing meetingUrl in request');
+    return res.status(400).json({ 
+      error: 'VALIDATION_ERROR',
+      message: 'meetingUrl is required',
+      required: ['meetingUrl']
+    });
   }
 
+  // URL validation
+  try {
+    new URL(meetingUrl);
+  } catch (e) {
+    logger.warn({ meetingUrl }, 'Invalid URL format');
+    return res.status(400).json({ 
+      error: 'INVALID_URL',
+      message: 'meetingUrl must be a valid URL'
+    });
+  }
+  
   logger.info({ meetingUrl, leadId }, 'Meeting processing request received');
 
-  let browser, page, rec;
+  let browser, page, rec, audioFile;
   try {
     // Открываем встречу
     ({ browser, page } = await openMeeting({ url: meetingUrl, logger }));
 
     // Старт записи системного звука
     rec = startPulseRecording({ logger });
+    audioFile = rec.outfile;
 
     // Ждём окончания встречи (максимум 1 час)
+    logger.info({ maxSeconds: config.recording.maxSeconds }, 'Waiting for meeting to complete...');
     await page.waitForTimeout(config.recording.maxSeconds * 1000);
 
     // Останавливаем запись
@@ -51,11 +77,22 @@ app.post('/process-meeting', async (req, res) => {
 
     // Транскрипт через Gemini
     const transcript = await transcribeAudio(outfile, logger);
-    logger.info({ length: transcript.length }, 'Transcript received');
+    logger.info({ transcriptLength: transcript.length }, 'Transcript received');
 
     // Анализ по чек-листу через Gemini
     const analysisResult = await runChecklist(transcript, logger);
-    logger.info({ analysisResult }, 'Meeting analysis done');
+    logger.info({ overallScore: analysisResult.overallScore, category: analysisResult.category }, 'Meeting analysis completed');
+
+    // Обновляем лид в Bitrix24 если указан leadId
+    if (leadId && config.bitrix.webhookUrl) {
+      try {
+        await bitrixService.updateLead(leadId, analysisResult, transcript, meetingUrl, logger);
+        logger.info({ leadId }, 'Bitrix lead updated successfully');
+      } catch (bitrixError) {
+        logger.error({ leadId, error: bitrixError.message }, 'Failed to update Bitrix lead');
+        // Не прерываем выполнение, просто логируем ошибку
+      }
+    }
 
     // Формируем отчет для отправки админу
     const reportMessage = `
@@ -70,11 +107,11 @@ app.post('/process-meeting', async (req, res) => {
 
 📋 Результаты анализа:
 ${Object.entries(analysisResult.points || {}).map(([key, value]) => 
-  `${key}. ${value.score}/10 - ${value.comment.substring(0, 50)}...`
+  `${key}. ${value.score}/10 - ${value.comment?.substring(0, 50) || 'N/A'}...`
 ).join('\n')}
 
 💡 Резюме:
-${analysisResult.summary}
+${analysisResult.summary || 'Нет резюме'}
 
 🎧 Транскрипт (первые 500 символов):
 ${transcript.substring(0, 500)}...
@@ -83,7 +120,7 @@ ${transcript.substring(0, 500)}...
     // Отправляем отчет админу
     if (config.adminChatId) {
       await sendMessage(config.adminChatId, reportMessage);
-      logger.info('Report sent to admin');
+      logger.info('Report sent to admin via Telegram');
     }
 
     res.json({
@@ -91,11 +128,22 @@ ${transcript.substring(0, 500)}...
       meetingUrl,
       leadId,
       transcriptLength: transcript.length,
-      analysis: analysisResult
+      analysis: {
+        overallScore: analysisResult.overallScore,
+        category: analysisResult.category,
+        summary: analysisResult.summary,
+        pointsCount: Object.keys(analysisResult.points || {}).length
+      },
+      bitrixUpdated: !!(leadId && config.bitrix.webhookUrl)
     });
 
   } catch (e) {
-    logger.error({ err: e }, 'Meeting processing failed');
+    logger.error({ 
+      err: e.message, 
+      stack: e.stack,
+      meetingUrl, 
+      leadId 
+    }, 'Meeting processing failed');
     
     // Отправляем ошибку админу
     if (config.adminChatId) {
@@ -106,18 +154,30 @@ ${transcript.substring(0, 500)}...
     
     res.status(500).json({ 
       success: false, 
-      error: e.message || 'Internal error',
+      error: 'PROCESSING_ERROR',
+      message: e.message || 'Internal error',
       meetingUrl,
       leadId
     });
   } finally {
-    try { if (rec) await stopRecording(rec); } catch (_) {}
+    // Cleanup resources
+    try { 
+      if (rec && typeof rec.stop === 'function') {
+        await rec.stop(); 
+      }
+    } catch (_) {}
+    
     try { if (page) await page.close(); } catch (_) {}
     try { if (browser) await browser.close(); } catch (_) {}
+    
+    logger.info({ meetingUrl }, 'Meeting processing cleanup completed');
   }
 });
 
-// Запускаем сервер
-app.listen(config.port, () => {
-  logger.info({ port: config.port }, 'Server started');
+// Запускаем сервер с graceful shutdown
+const server = app.listen(config.port, () => {
+  logger.info({ port: config.port, env: process.env.NODE_ENV }, 'Server started');
 });
+
+// Setup graceful shutdown handlers
+setupGracefulShutdown(server);

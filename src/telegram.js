@@ -1,11 +1,20 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from './config.js';
 import axios from 'axios';
+import pino from 'pino';
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  formatters: {
+    level: (label) => ({ level: label })
+  },
+  timestamp: () => `,"time":"${new Date().toISOString()}"`
+});
 
 const token = config.telegramBotToken;
 let bot;
 
-console.log('Telegram token status:', token ? 'PRESENT' : 'MISSING');
+logger.info({ tokenPresent: !!token }, 'Telegram bot initialization');
 
 if (token) {
   try {
@@ -20,12 +29,12 @@ if (token) {
       }
     });
     
-    console.log('Telegram bot initialized successfully');
+    logger.info('Telegram bot initialized successfully');
 
     // Команда старта
     bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
-      console.log(`Received /start from chat ${chatId}`);
+      logger.info({ chatId }, 'Received /start command');
       bot.sendMessage(chatId, `🤖 Добро пожаловать в Meeting Bot!\n\nДля анализа встречи отправьте:\n/process [ссылка_на_встречу] [ID_лида]`).catch(console.error);
     });
 
@@ -42,7 +51,7 @@ if (token) {
         meetingUrl = 'https://' + meetingUrl;
       }
       
-      console.log(`Processing meeting: ${meetingUrl}, lead: ${leadId}`);
+      logger.info({ meetingUrl, leadId, chatId }, 'Processing meeting request from Telegram');
       
       try {
         await bot.sendMessage(chatId, '🚀 Начинаю обработку встречи...');
@@ -55,11 +64,13 @@ if (token) {
         
         if (response.data.success) {
           await bot.sendMessage(chatId, '✅ Встреча успешно обработана! Отчет отправлен администратору.');
+          logger.info({ chatId, leadId }, 'Meeting processed successfully via Telegram');
         } else {
           await bot.sendMessage(chatId, `❌ Ошибка обработки: ${response.data.error}`);
+          logger.warn({ chatId, error: response.data.error }, 'Meeting processing failed');
         }
       } catch (error) {
-        console.error('Error processing meeting:', error);
+        logger.error({ chatId, error: error.message }, 'Error processing meeting via Telegram');
         await bot.sendMessage(chatId, `❌ Ошибка: ${error.response?.data?.error || error.message}`);
       }
     });
@@ -67,31 +78,32 @@ if (token) {
     // Простая команда для тестирования
     bot.onText(/\/test/, (msg) => {
       const chatId = msg.chat.id;
+      logger.info({ chatId }, 'Received /test command');
       bot.sendMessage(chatId, 'Бот работает корректно!').catch(console.error);
     });
 
     // Обработка ошибок бота
     bot.on('polling_error', (error) => {
-      console.error('Polling error:', error);
+      logger.error({ error: error.message }, 'Telegram polling error');
     });
     
     bot.on('webhook_error', (error) => {
-      console.error('Webhook error:', error);
+      logger.error({ error: error.message }, 'Telegram webhook error');
     });
     
-    console.log('Telegram bot started successfully');
+    logger.info('Telegram bot started successfully');
 
   } catch (error) {
-    console.error('Failed to initialize Telegram bot:', error);
+    logger.error({ error: error.message }, 'Failed to initialize Telegram bot');
   }
 } else {
-  console.warn('TELEGRAM_BOT_TOKEN not set. Telegram bot will not start.');
+  logger.warn('TELEGRAM_BOT_TOKEN not set. Telegram bot will not start.');
 }
 
 // Функция для отправки сообщений
 export async function sendMessage(chatId, message) {
   if (!bot) {
-    console.error('Bot not initialized, cannot send message');
+    logger.warn({ chatId }, 'Bot not initialized, cannot send message');
     return;
   }
   
@@ -105,8 +117,9 @@ export async function sendMessage(chatId, message) {
     } else {
       await bot.sendMessage(chatId, message);
     }
+    logger.debug({ chatId, messageLength: message.length }, 'Message sent to Telegram');
   } catch (error) {
-    console.error('Error sending message to Telegram:', error);
+    logger.error({ chatId, error: error.message }, 'Error sending message to Telegram');
   }
 }
 

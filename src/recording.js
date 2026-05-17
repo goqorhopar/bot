@@ -3,8 +3,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from './config.js';
+import pino from 'pino';
 
-export function startPulseRecording({ logger }) {
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  formatters: {
+    level: (label) => ({ level: label })
+  },
+  timestamp: () => `,"time":"${new Date().toISOString()}"`
+});
+
+export function startPulseRecording({ logger: externalLogger }) {
+  const logger = externalLogger || pino({
+    level: process.env.LOG_LEVEL || 'info',
+    formatters: {
+      level: (label) => ({ level: label })
+    },
+    timestamp: () => `,"time":"${new Date().toISOString()}"`
+  });
+  
   const id = uuidv4();
   const dir = path.resolve(config.recording.outDir);
   
